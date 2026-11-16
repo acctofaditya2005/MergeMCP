@@ -1,0 +1,257 @@
+# merge-mcp rules: everything tunable lives here, not in code.
+#
+# To change a weight, teach the server a new language, or recognise a new linter, copy the
+# relevant table into your own file and point MERGE_MCP_RULES at it (or save it as
+# ~/.merge-mcp/rules.toml). Your file is merged over these defaults, table by table.
+
+# ---------------------------------------------------------------------------- viability
+# How find_issues / assess_issue score an issue. Start at 100, apply every rule that fires.
+
+[viability]
+good_at = 70                     # score >= this: verdict "good"
+risky_at = 40                    # score >= this: "risky"; below: "avoid"
+claim_window_days = 30           # a "can I take this?" comment counts for this long
+stale_issue_days = 365
+inactive_repo_days = 180
+slow_merge_days = 30
+newcomer_labels = [
+  "good first issue", "good-first-issue", "help wanted", "help-wanted", "beginner", "easy",
+  "starter", "first-timers-only", "low-hanging-fruit",
+]
+search_labels = ["good first issue", "help wanted"]
+internal_associations = ["OWNER", "MEMBER", "COLLABORATOR"]
+claim_pattern = '''\b(i('d| would) (like|love) to (work|take)|can i (work on|take|pick)|i('ll| will) (take|work on|pick)|working on (this|it)|assign (this |it )?to me|i('m| am) (working|on it))\b'''
+
+[viability.weights]
+assigned = -60
+open_linked_pr = -50
+recent_claim = -20
+stale_issue = -15
+inactive_repo = -40
+no_external_merges = -20
+slow_merges = -15
+no_contributing_guide = -5
+newcomer_label = 10
+
+# ---------------------------------------------------------------------------- ecosystems
+# One table per language ecosystem. Adding a language is adding a table.
+#
+#   markers          files whose presence at the repo root identifies the ecosystem
+#   extensions       fallback: the ecosystem whose source files are most common wins
+#   setup_actions    GitHub Actions that install its toolchain (prefix match on `uses:`)
+#   version_inputs   the `with:` keys those actions read the version from
+#   version_pattern  versions that are valid image tags; anything else uses default_version
+#   image            sandbox image; {version} is filled in
+#   env              exported before every command; keeps caches inside the checkout so
+#                    they survive between the (separate) setup and test containers
+#   env_setup        run once before install
+#   install / test / lint   defaults, used when the repo's CI does not tell us
+#   detector         optional named Python hook that refines the defaults from repo files
+#   result_parser    optional named parser that turns test output into per-test results
+#   test_id_runners  test commands matching one of these accept test ids and test_flags
+#   ci_test_must_match  if set, a CI test command is used only when it matches one of these
+#   exclude          paths the server creates that must stay out of diffs
+#   manifests        dependency file name pattern -> named manifest parser
+#   registry_url / repo_fields   how to map a package name to its source repository
+
+[ecosystems.python]
+markers = ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "tox.ini"]
+extensions = [".py"]
+setup_actions = ["actions/setup-python", "astral-sh/setup-uv"]
+version_inputs = ["python-version"]
+version_pattern = '^3\.\d+$'
+default_version = "3.12"
+image = "python:{version}"
+env_setup = "([ -d .merge-mcp-venv ] || python3 -m venv .merge-mcp-venv) && hash -r"
+install = "python -m pip install -q -U pip && pip install -e . && pip install pytest"
+test = "python -m pytest"
+detector = "python"
+result_parser = "pytest"
+test_id_runners = ['(^|[\s/])(pytest|py\.test)(\s|$)', '-m\s+pytest(\s|$)']
+# CI test commands are adopted only when they call the runner directly. Wrappers such as
+# tox or `uv run` need tools and build artefacts the sandbox does not have, and the
+# detector's direct pytest call also yields per-test results.
+ci_test_must_match = ['(^|[\s/])(pytest|py\.test)(\s|$)', '-m\s+pytest(\s|$)']
+test_flags = "-rA -p no:cacheprovider"
+exclude = [".merge-mcp-venv/"]
+registry_url = "https://pypi.org/pypi/{name}/json"
+repo_fields = [
+  "info.project_urls.Source", "info.project_urls.Source Code", "info.project_urls.Repository",
+  "info.project_urls.GitHub", "info.project_urls.Homepage", "info.project_urls.Code",
+  "info.home_page",
+]
+
+[ecosystems.python.env]
+PATH = "$PWD/.merge-mcp-venv/bin:$PATH"
+PIP_DISABLE_PIP_VERSION_CHECK = "1"
+PIP_NO_INPUT = "1"
+PYTHONDONTWRITEBYTECODE = "1"
+# Fixed so that test ids generated from sets are identical on every run.
+PYTHONHASHSEED = "0"
+
+[ecosystems.python.manifests]
+"requirements*.txt" = "requirements"
+"pyproject.toml" = "pyproject"
+
+[ecosystems.node]
+markers = ["package.json"]
+extensions = [".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"]
+setup_actions = ["actions/setup-node", "pnpm/action-setup", "oven-sh/setup-bun"]
+version_inputs = ["node-version"]
+version_pattern = '^\d+(\.\d+){0,2}$'
+default_version = "lts"
+image = "node:{version}"
+install = "npm install --no-audit --no-fund"
+test = "npm test"
+exclude = ["node_modules/"]
+registry_url = "https://registry.npmjs.org/{name}"
+repo_fields = ["repository.url", "repository", "homepage"]
+
+[ecosystems.node.env]
+CI = "true"
+npm_config_cache = "$PWD/.merge-mcp-cache/npm"
+
+[ecosystems.node.manifests]
+"package.json" = "package_json"
+
+[ecosystems.go]
+markers = ["go.mod"]
+extensions = [".go"]
+setup_actions = ["actions/setup-go"]
+version_inputs = ["go-version"]
+version_pattern = '^1\.\d+(\.\d+)?$'
+default_version = "1"
+image = "golang:{version}"
+install = "go mod download"
+test = "go test ./..."
+lint = "go vet ./..."
+
+[ecosystems.go.env]
+GOPATH = "$PWD/.merge-mcp-cache/go"
+GOCACHE = "$PWD/.merge-mcp-cache/go-build"
+# -modcacherw keeps the module cache deletable when the workspace is removed.
+GOFLAGS = "-buildvcs=false -modcacherw"
+
+[ecosystems.go.manifests]
+"go.mod" = "go_mod"
+
+[ecosystems.rust]
+markers = ["Cargo.toml"]
+extensions = [".rs"]
+setup_actions = ["dtolnay/rust-toolchain", "actions-rust-lang/setup-rust-toolchain"]
+version_inputs = ["toolchain"]
+version_pattern = '^1(\.\d+){0,2}$'
+default_version = "1"
+image = "rust:{version}"
+install = "cargo fetch"
+test = "cargo test"
+lint = "cargo clippy --all-targets"
+exclude = ["target/"]
+registry_url = "https://crates.io/api/v1/crates/{name}"
+repo_fields = ["crate.repository", "crate.homepage"]
+
+[ecosystems.rust.env]
+CARGO_HOME = "$PWD/.merge-mcp-cache/cargo"
+# Keep the image's toolchain location; in local mode fall back to the host's rustup.
+RUSTUP_HOME = "${RUSTUP_HOME:-${MERGE_MCP_HOST_HOME:-$HOME}/.rustup}"
+
+[ecosystems.rust.manifests]
+"Cargo.toml" = "cargo_toml"
+
+# ---------------------------------------------------------------------------- CI reading
+# How `run:` steps in a CI workflow are recognised. First matching kind wins, in the order
+# test, lint, install. Patterns are regular expressions searched in the step's script.
+
+[ci]
+workflow_globs = [".github/workflows/*.yml", ".github/workflows/*.yaml"]
+skip_runners = ["windows", "macos"]          # jobs pinned to these are ignored
+# Choosing between several jobs that run tests: jobs triggered by pushes and pull requests
+# beat scheduled ones, plain names beat specialised ones.
+contribution_events = ["push", "pull_request", "pull_request_target", "merge_group"]
+preferred_job_names = ["test", "tests", "unit", "unit-tests", "unittest", "ci", "build", "check", "main"]
+specialised_job_words = [
+  "nightly", "race", "loom", "miri", "bench", "fuzz", "sanitiz", "coverage", "docs", "types",
+  "typing", "e2e", "integration", "minimal", "msrv", "compat", "smoke", "release", "publish",
+  "wasm", "cross", "no-std", "no_std", "optional",
+]
+prefer_matrix = ["ubuntu", "linux"]          # preferred when a matrix offers several OSes
+unstable_versions = ["dev", "rc", "alpha", "beta", "nightly", "pypy", "graal", "canary"]
+# Steps containing any of these cannot be reproduced locally and are dropped.
+skip_step_patterns = ['\bsudo\b', '\bapt(-get)?\b', '\bbrew\b', '\bchoco\b', 'secrets\.', '\bdocker\b', 'codecov', '\bgh\s']
+
+[ci.kinds]
+test = [
+  '\bpytest\b', '\btox\b', '\bnox\b', '\bunittest\b',
+  '\b(npm|pnpm|yarn|bun)\s+(run\s+)?test\b', '\bjest\b', '\bvitest\b', '\bmocha\b',
+  '\b(npm|pnpm|yarn|bun)\s+run\s+[\w:-]*(test|unit|spec)[\w:-]*',
+  '[\w./-]*test[\w.-]*\.(sh|bash)\b',     # project test scripts such as ci/test-stable.sh
+  '\bgo\s+test\b', '\bcargo\s+(nextest|test)\b',
+  '\bmake\s+[\w-]*(test|check)[\w-]*', '\bjust\s+[\w-]*test[\w-]*',
+  '\b(mvn|gradle|\./gradlew)\b.*\btest\b', '\bbundle\s+exec\s+(rspec|rake)\b', '\bphpunit\b',
+]
+lint = [
+  '\bruff\b', '\bflake8\b', '\bblack\b', '\bmypy\b', '\bpyright\b', '\bpylint\b',
+  '\beslint\b', '\bprettier\b', '\bbiome\b', '\b(npm|pnpm|yarn|bun)\s+run\s+(lint|format|typecheck)\b',
+  '\bgolangci-lint\b', '\bgo\s+vet\b', '\bgofmt\b', '\bcargo\s+(clippy|fmt)\b',
+  '\bmake\s+lint\b', '\bpre-commit\b', '\brubocop\b',
+]
+install = [
+  '\bpip3?\s+install\b', '\buv\s+(sync|pip)\b', '\bpoetry\s+install\b', '\bpdm\s+install\b',
+  '\bhatch\s+env\b', '\b(npm|pnpm|bun)\s+(ci|install|i)\b', '\byarn(\s+install)?\s*(--[\w-]+\s*)*$',
+  '\bgo\s+(mod\s+download|get|build)\b', '\bcargo\s+(fetch|build)\b', '\bbundle\s+install\b',
+  '\bmake\s+(install|deps|build|setup)\b', '\bcomposer\s+install\b',
+]
+
+# ---------------------------------------------------------------------------- categories
+# What kind of file a path is, used to learn "what does a complete pull request contain".
+# First matching category wins; anything unmatched is "source".
+# Glob syntax: * within one path segment, ** across segments.
+
+[categories]
+tests = [
+  "tests/**", "test/**", "testing/**", "spec/**", "**/tests/**", "**/test/**", "**/__tests__/**",
+  "**/testdata/**", "**/test_*.py", "**/*_test.py", "**/conftest.py", "**/*_test.go",
+  "**/*.test.*", "**/*.spec.*", "**/*_spec.rb", "**/*Test.java", "**/*Tests.cs",
+]
+changelog = [
+  "CHANGELOG*", "CHANGES*", "HISTORY*", "NEWS*", "RELEASES*", "docs/changelog*", "docs/changes*",
+  "changelog.d/**", "changes/**", "changelog/**", "newsfragments/**", "news/**", ".changeset/**",
+  ".changes/**", "docs/whatsnew/**",
+]
+docs = ["docs/**", "doc/**", "**/*.md", "**/*.rst", "**/*.mdx", "**/*.adoc"]
+ci = [".github/**", ".circleci/**", ".gitlab-ci.yml", ".travis.yml", "azure-pipelines.yml"]
+dependencies = [
+  "**/package-lock.json", "**/yarn.lock", "**/pnpm-lock.yaml", "**/Cargo.lock", "**/go.sum",
+  "**/poetry.lock", "**/uv.lock", "**/Pipfile.lock", "**/requirements*.txt", "**/Gemfile.lock",
+]
+
+# ---------------------------------------------------------------------------- precedents
+# Learning co-change rules from history: "when <trigger> files change, <expect> files
+# change too in N% of commits".
+
+[precedents]
+history = 150                    # commits sampled
+trigger = "source"
+expect = ["tests", "changelog", "docs"]
+min_support = 8                  # need at least this many trigger commits
+min_confidence = 0.6             # report the rule at or above this share
+large_change_factor = 3.0        # warn when a diff touches this many times the median files
+ignore_subject_patterns = ['^Merge ', '^Bump ', '^\[pre-commit', '^chore\(deps', '^build\(deps', '^Release ', '^v?\d+\.\d+']
+
+# ---------------------------------------------------------------------------- policy
+# Text patterns searched in contributor docs.
+
+[policy]
+contributing_paths = [
+  "CONTRIBUTING.md", "CONTRIBUTING.rst", "CONTRIBUTING.txt", ".github/CONTRIBUTING.md",
+  "docs/CONTRIBUTING.md", "docs/contributing.md", "docs/contributing.rst",
+]
+pr_template_paths = [
+  ".github/PULL_REQUEST_TEMPLATE.md", ".github/pull_request_template.md",
+  "PULL_REQUEST_TEMPLATE.md", "docs/PULL_REQUEST_TEMPLATE.md",
+]
+code_of_conduct_paths = ["CODE_OF_CONDUCT.md", ".github/CODE_OF_CONDUCT.md", "docs/CODE_OF_CONDUCT.md"]
+extra_policy_paths = ["AI_POLICY.md", ".github/AI_POLICY.md", "AGENTS.md"]
+dco_pattern = '''signed-off-by|\bDCO\b|developer certificate of origin|git commit -s'''
+cla_pattern = '''\bCLA\b|contributor licen[cs]e agreement'''
+ai_pattern = '''\b(AI[- ](generated|assisted|tools?)|LLMs?|large language models?|ChatGPT|Copilot|generative AI|machine[- ]generated)\b'''

@@ -1,0 +1,25 @@
+{
+  "agent": "baseline:oracle",
+  "tasks": 35,
+  "attempts_per_task": 1,
+  "pass_at": {
+    "1": 1.0
+  },
+  "resolved_rate": 1.0,
+  "mean_latency_s": 0.03,
+  "p95_latency_s": 0.04,
+  "mean_input_tokens": 0.0,
+  "mean_output_tokens": 0.0,
+  "mean_steps": 0.0,
+  "mean_tool_calls": 1.14,
+  "tool_error_rate": 0.0,
+  "mean_files_recall": 1.0,
+  "mean_review_warnings": 0.11,
+  "tests_included_rate": 0.0,
+  "lint_graded_attempts": 9,
+  "lint_clean_rate": 1.0,
+  "resolved_and_lint_clean_rate": 1.0,
+  "total_cost_usd": null,
+  "cost_per_resolved_task_usd": null,
+  "errors": 0
+}

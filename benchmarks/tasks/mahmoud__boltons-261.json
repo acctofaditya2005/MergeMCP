@@ -1,0 +1,41 @@
+{
+  "task_id": "mahmoud__boltons-261",
+  "repo": "mahmoud/boltons",
+  "base_commit": "78e8638e695d78ccc2dc641ef87e38fa51185840",
+  "issue_number": 261,
+  "problem_statement": "Python `funcutils.wraps` breaks when keyword only arguments involved\n\nCode worth 1000 words:\r\n\r\n```python\r\n>>> from boltons.funcutils import wraps\r\n>>>\r\n>>> def g(a: float, b=10):\r\n...     return a * b\r\n>>>\r\n>>> def f(a: int,  *, b=1):\r\n...     return a * b\r\n>>>\r\n>>> # all is well here...\r\n>>> assert f(3) == 3\r\n>>> assert g(3) == 30\r\n>>> assert wraps(f)(g)(3) == 3  # yay, g got the f default (not so with functools.wraps!)\r\n>>>\r\n>>> # but this doesn't work\r\n>>> wraps(g)(f)(3)\r\nTraceback (most recent call last):\r\n  File \"<stdin>\", line 1, in <module>\r\n  File \"<boltons.funcutils.FunctionBuilder-1>\", line 2, in g\r\nTypeError: f() takes 1 positional argument but 2 were given\r\n```",
+  "gold_patch": "diff --git a/boltons/funcutils.py b/boltons/funcutils.py\nindex d0afc78..1a8c5f4 100644\n--- a/boltons/funcutils.py\n+++ b/boltons/funcutils.py\n@@ -601,10 +601,11 @@ def update_wrapper(wrapper, func, injected=None, expected=None, build_from=None,\n     for arg, default in expected_items:\n         fb.add_arg(arg, default)  # may raise ExistingArgument\n \n+    invocation_str = fb.get_invocation_str(target=wrapper)\n     if fb.is_async:\n-        fb.body = 'return await _call(%s)' % fb.get_invocation_str()\n+        fb.body = 'return await _call(%s)' % invocation_str\n     else:\n-        fb.body = 'return _call(%s)' % fb.get_invocation_str()\n+        fb.body = 'return _call(%s)' % invocation_str\n \n     execdict = dict(_call=wrapper, _func=func)\n     fully_wrapped = fb.get_func(execdict, with_dict=update_dict)\n@@ -782,7 +783,7 @@ class FunctionBuilder:\n                                      {},\n                                      annotations)\n \n-    def get_invocation_str(self):\n+    def get_invocation_str(self, target=None):\n         # Regular args with defaults (and keyword-only args) are forwarded\n         # as keywords (name=name), so values callers pass by keyword reach\n         # the wrapper's **kwargs instead of being silently flattened into\n@@ -790,12 +791,31 @@ class FunctionBuilder:\n         # params (keywords are rejected outright), and every regular arg\n         # when *varargs is present (a keyword-forwarded arg that precedes\n         # *varargs collides with non-empty varargs).\n+        #\n+        # When *target* -- the callable the generated invocation will\n+        # actually call -- is provided, any argument that target only\n+        # accepts as a keyword is forwarded as a keyword regardless of\n+        # the rules above, since positional forwarding could never bind\n+        # it (#261). Targets without introspectable signatures fall\n+        # back to signature-based forwarding alone.\n+        target_kwonly = frozenset()\n+        if target is not None:\n+            try:\n+                target_params = inspect.signature(target).parameters\n+            except (ValueError, TypeError):\n+                pass\n+            else:\n+                target_kwonly = frozenset(\n+                    p.name for p in target_params.values()\n+                    if p.kind is inspect.Parameter.KEYWORD_ONLY)\n         defaults = self.defaults or ()\n         args = list(self.args or ())\n         n_positional = len(args) - len(defaults)\n         parts, kw_parts = [], []\n         for i, arg in enumerate(args):\n-            if (i >= n_positional and not self.varargs\n+            if arg in target_kwonly:\n+                kw_parts.append(arg + '=' + arg)\n+            elif (i >= n_positional and not self.varargs\n                     and arg not in self.posonlyargs):\n                 kw_parts.append(arg + '=' + arg)\n             else:\n",
+  "test_patch": "diff --git a/tests/test_funcutils_fb_py3.py b/tests/test_funcutils_fb_py3.py\nindex 5297f8b..9eb162a 100644\n--- a/tests/test_funcutils_fb_py3.py\n+++ b/tests/test_funcutils_fb_py3.py\n@@ -329,3 +329,53 @@ def test_wraps_posonly_defaulted_arg():\n \n     assert deco(func)(1, 5) == (1, 5, 3)\n     assert deco(func)(1, 5, z=7) == (1, 5, 7)\n+\n+\n+def test_wraps_target_kwonly_arg():\n+    # issue #261: wraps(g)(f) generates a shim with g's signature that\n+    # calls f; args that f only accepts as keywords must be forwarded\n+    # as keywords, even when g's signature would pass them positionally\n+    def g(a: float, b=10):\n+        return a * b\n+\n+    def f(a: int, *, b=1):\n+        return a * b\n+\n+    assert wraps(f)(g)(3) == 3\n+    assert wraps(g)(f)(3) == 30  # raised TypeError before the fix\n+\n+\n+def test_wraps_target_kwonly_arg_no_default():\n+    # the non-defaulted flavor: donor's b is positional and undefaulted,\n+    # so signature-based forwarding alone leaves it positional\n+    def g(a, b):\n+        return a * b\n+\n+    def f(a, *, b):\n+        return a + b\n+\n+    assert wraps(g)(f)(3, 4) == 7\n+    assert wraps(g)(f)(3, b=4) == 7\n+\n+\n+def test_wraps_target_kwonly_arg_with_varargs():\n+    # varargs normally force positional forwarding (#343), but an arg\n+    # the target only accepts as keyword is still keyword-forwarded,\n+    # emitted after *varargs: _call(a, *va, b=b)\n+    def g(a, b, *va):\n+        raise AssertionError('never called')\n+\n+    def f(a, *va, b):\n+        return (a, va, b)\n+\n+    assert wraps(g)(f)(1, 2, 3) == (1, (3,), 2)\n+\n+\n+def test_wraps_uninspectable_target():\n+    # a wrapper without an introspectable signature (e.g. some C\n+    # callables) falls back to signature-based forwarding at wrap time\n+    def g(a, b):\n+        return a * b\n+\n+    wrapped = update_wrapper(map, g)\n+    assert wrapped.__name__ == 'g'\n",
+  "test_files": [
+    "tests/test_funcutils_fb_py3.py"
+  ],
+  "fail_to_pass": [
+    "tests/test_funcutils_fb_py3.py::test_wraps_target_kwonly_arg_no_default",
+    "tests/test_funcutils_fb_py3.py::test_wraps_target_kwonly_arg_with_varargs"
+  ],
+  "pass_to_pass": [
+    "tests/test_funcutils_fb_py3.py::test_FunctionBuilder_add_arg_kwonly",
+    "tests/test_funcutils_fb_py3.py::test_copy_function_kw_defaults_py3",
+    "tests/test_funcutils_fb_py3.py::test_defaults_dict",
+    "tests/test_funcutils_fb_py3.py::test_get_arg_names",
+    "tests/test_funcutils_fb_py3.py::test_get_invocation_sig_str[None-args-kwargs-None-a-kwonlydefaults0-*args, a=a, **kwargs-(*args, a, **kwargs)]",
+    "tests/test_funcutils_fb_py3.py::test_remove_kwonly_arg",
+    "tests/test_funcutils_fb_py3.py::test_update_wrapper_partial[boltons.funcutils]",
+    "tests/test_funcutils_fb_py3.py::test_update_wrapper_partial[functools]",
+    "tests/test_funcutils_fb_py3.py::test_wraps_async",
+    "tests/test_funcutils_fb_py3.py::test_wraps_defaulted_arg_before_varargs",
+    "tests/test_funcutils_fb_py3.py::test_wraps_defaulted_arg_keyword_forwarding",
+    "tests/test_funcutils_fb_py3.py::test_wraps_hide_wrapped",
+    "tests/test_funcutils_fb_py3.py::test_wraps_inner_kwarg_only",
+    "tests/test_funcutils_fb_py3.py::test_wraps_posonly_defaulted_arg",
+    "tests/test_funcutils_fb_py3.py::test_wraps_py3",
+    "tests/test_funcutils_fb_py3.py::test_wraps_target_kwonly_arg",
+    "tests/test_funcutils_fb_py3.py::test_wraps_uninspectable_target"
+  ],
+  "install_command": null,
+  "test_command": null,
+  "lint_command": null,
+  "lint_baseline": "none",
+  "source_commit": "b5c495bec206741ec25cd82ecc869e0b59bb0d10",
+  "validated": true
+}

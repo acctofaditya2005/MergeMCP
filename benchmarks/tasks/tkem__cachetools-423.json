@@ -1,0 +1,51 @@
+{
+  "task_id": "tkem__cachetools-423",
+  "repo": "tkem/cachetools",
+  "base_commit": "eadb91cc9d54a57d6738386bc5c575ff3c7d22ec",
+  "issue_number": 423,
+  "problem_statement": "RRCache.popitem() on an empty cache raises the choice function's exception instead of KeyError\n\nTested with `cachetools` 7.2.0 (current release).\n\n**Describe the bug**\n\n`RRCache.popitem()` on an empty cache only raises `KeyError` when the `choice`\nfunction happens to raise `IndexError`, which is what the default\n`random.choice` does. With any other valid choice function, the caller gets\nwhatever exception that function raises for an empty sequence.\n\nThis is the documented contract for `choice` (docs/index.rst):\n\n> The optional argument `choice` may specify an alternative function that\n> returns an arbitrary element from a non-empty sequence.\n\nSo a choice function only has to handle non-empty sequences, but `popitem()`\ncalls it with an empty list and relies on the exception type it produces.\n\nThe other cache classes each detect emptiness on their own structure before\npicking a victim: `FIFOCache`, `LRUCache`, `TTLCache` and `TLRUCache` use\n`next(iter(...))` with `except StopIteration`, and `LFUCache` checks\n`if curr is root` explicitly.\n\n**Expected result**\n\n`popitem()` on an empty `RRCache` raises `KeyError(\"RRCache is empty\")`,\nlike every other cache class, whatever `choice` is.\n\n**Actual result**\n\n```\nFIFOCache                    -> KeyError: 'FIFOCache is empty'\nLRUCache                     -> KeyError: 'LRUCache is empty'\nLFUCache                     -> KeyError: 'LFUCache is empty'\nTTLCache                     -> KeyError: 'TTLCache is empty'\nRRCache(random.choice)       -> KeyError: 'RRCache is empty'\nRRCache(choice=min)          -> ValueError: min() iterable argument is empty\nRRCache(choice=max)          -> ValueError: max() iterable argument is empty\nRRCache(next(iter))          -> StopIteration:\n```\n\n`choice=min` is not a contrived example: it is the alternative choice function\nused by `tests/test_rr.py` itself, in `test_rr_getsizeof`, `test_rr_setitem`\nand others.\n\nThe `StopIteration` variant is the most unpleasant one, because inside a\ngenerator PEP 479 turns it into a `RuntimeError` far from its origin.\n\n**Reproduction steps**\n\n```python\nimport cachetools\n\ncache = cachetools.RRCache(maxsize=2, choice=min)\ncache.popitem()\n# ValueError: min() iterable argument is empty\n# expected: KeyError: 'RRCache is empty'\n```\n\nThe generic drain idiom is the realistic way to hit it:\n\n```python\nimport cachetools\n\ncache = cachetools.RRCache(maxsize=4, choice=min)\ncache[1] = 1\ncache[2] = 2\n\nwhile True:\n    try:\n        key, value = cache.popitem()\n    except KeyError:\n        break\n    print(\"popped\", key, value)\n# popped (1, 1)\n# popped (2, 2)\n# ValueError: min() iterable argument is empty\n```\n\n**Note**\n\n`popitem()` already contains the intended behaviour:\n`raise KeyError(\"%s is empty\" % type(self).__name__) from None`. That branch is\njust unreachable unless `choice` raises `IndexError`. I have a fix and a\nregression test ready and will open a pull request against `develop` linking\nthis issue.",
+  "gold_patch": "diff --git a/src/cachetools/__init__.py b/src/cachetools/__init__.py\nindex c9eecb2..fe921c0 100644\n--- a/src/cachetools/__init__.py\n+++ b/src/cachetools/__init__.py\n@@ -357,12 +357,11 @@ class RRCache(Cache):\n \n     def popitem(self):\n         \"\"\"Remove and return a random `(key, value)` pair.\"\"\"\n-        try:\n-            key = self.__choice(self.__keys)\n-        except IndexError:\n+        keys = self.__keys\n+        if not keys:\n             raise KeyError(\"%s is empty\" % type(self).__name__) from None\n-        else:\n-            return (key, self.pop(key))\n+        key = self.__choice(keys)\n+        return (key, self.pop(key))\n \n     def clear(self):\n         Cache.clear(self)\n",
+  "test_patch": "diff --git a/tests/test_rr.py b/tests/test_rr.py\nindex 43917d7..76d509c 100644\n--- a/tests/test_rr.py\n+++ b/tests/test_rr.py\n@@ -86,3 +86,18 @@ class RRCacheTest(unittest.TestCase, CacheTestMixin):\n     def test_rr_default_choice(self):\n         cache = RRCache[int, int](maxsize=2)\n         self.assertIs(cache.choice, random.choice)\n+\n+    def test_rr_popitem_empty_custom_choice(self):\n+        # a custom `choice` function only has to handle non-empty\n+        # sequences, so an empty cache has to be detected beforehand\n+        for choice in (min, max, lambda seq: next(iter(seq))):\n+            cache = RRCache[int, int](maxsize=2, choice=choice)\n+\n+            with self.assertRaises(KeyError):\n+                cache.popitem()\n+\n+            cache[1] = 1\n+            self.assertEqual((1, 1), cache.popitem())\n+\n+            with self.assertRaises(KeyError):\n+                cache.popitem()\n",
+  "test_files": [
+    "tests/test_rr.py"
+  ],
+  "fail_to_pass": [
+    "tests/test_rr.py::RRCacheTest::test_rr_popitem_empty_custom_choice"
+  ],
+  "pass_to_pass": [
+    "tests/test_rr.py::RRCacheTest::test_clear",
+    "tests/test_rr.py::RRCacheTest::test_clear_empty",
+    "tests/test_rr.py::RRCacheTest::test_clear_getsizeof",
+    "tests/test_rr.py::RRCacheTest::test_defaults",
+    "tests/test_rr.py::RRCacheTest::test_delete",
+    "tests/test_rr.py::RRCacheTest::test_getsizeof_negative",
+    "tests/test_rr.py::RRCacheTest::test_getsizeof_param",
+    "tests/test_rr.py::RRCacheTest::test_getsizeof_replace_grow",
+    "tests/test_rr.py::RRCacheTest::test_getsizeof_replace_same_size",
+    "tests/test_rr.py::RRCacheTest::test_getsizeof_replace_shrink",
+    "tests/test_rr.py::RRCacheTest::test_getsizeof_subclass",
+    "tests/test_rr.py::RRCacheTest::test_insert",
+    "tests/test_rr.py::RRCacheTest::test_maxsize_infinite",
+    "tests/test_rr.py::RRCacheTest::test_maxsize_negative",
+    "tests/test_rr.py::RRCacheTest::test_maxsize_zero",
+    "tests/test_rr.py::RRCacheTest::test_missing",
+    "tests/test_rr.py::RRCacheTest::test_missing_getsizeof",
+    "tests/test_rr.py::RRCacheTest::test_pickle",
+    "tests/test_rr.py::RRCacheTest::test_pickle_maxsize",
+    "tests/test_rr.py::RRCacheTest::test_pop",
+    "tests/test_rr.py::RRCacheTest::test_popitem",
+    "tests/test_rr.py::RRCacheTest::test_popitem_exception_context",
+    "tests/test_rr.py::RRCacheTest::test_rr",
+    "tests/test_rr.py::RRCacheTest::test_rr_bad_choice",
+    "tests/test_rr.py::RRCacheTest::test_rr_default_choice",
+    "tests/test_rr.py::RRCacheTest::test_rr_getsizeof",
+    "tests/test_rr.py::RRCacheTest::test_rr_update_existing",
+    "tests/test_rr.py::RRCacheTest::test_update"
+  ],
+  "install_command": null,
+  "test_command": null,
+  "lint_command": null,
+  "lint_baseline": "clean",
+  "source_commit": "bcf9e8176ebe16da58751fce971c98ffe045ede1",
+  "validated": true
+}

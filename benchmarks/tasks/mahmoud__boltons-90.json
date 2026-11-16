@@ -1,0 +1,23 @@
+{
+  "task_id": "mahmoud__boltons-90",
+  "repo": "mahmoud/boltons",
+  "base_commit": "5df26592c29b9561d122640868ba0522cbc1e20d",
+  "issue_number": 90,
+  "problem_statement": "Adding a boltons.statsutils.mode() function\n\nThere are `median` and `mean` functions, but no `mode` for categorical variables.",
+  "gold_patch": "diff --git a/boltons/statsutils.py b/boltons/statsutils.py\nindex 36a8223..7b75a14 100644\n--- a/boltons/statsutils.py\n+++ b/boltons/statsutils.py\n@@ -30,7 +30,7 @@\n \n \"\"\"``statsutils`` provides tools aimed primarily at descriptive\n statistics for data analysis, such as :func:`mean` (average),\n-:func:`median`, :func:`variance`, and many others,\n+:func:`median`, :func:`mode`, :func:`variance`, and many others,\n \n The :class:`Stats` type provides all the main functionality of the\n ``statsutils`` module. A :class:`Stats` object wraps a given dataset,\n@@ -288,6 +288,27 @@ class Stats:\n         return self._get_quantile(self._get_sorted_data(), 0.5)\n     median = _StatsProperty('median', _calc_median)\n \n+    def _calc_mode(self):\n+        \"\"\"\n+        The mode is the value that appears most frequently in the\n+        data. Unlike the mean and median, the mode is well-defined for\n+        non-numeric, categorical data, too.\n+\n+        >>> mode([2, 1, 3, 1])\n+        1\n+        >>> mode(['a', 'b', 'b', 'c', 'c', 'c'])\n+        'c'\n+\n+        When several values are equally common, the one appearing\n+        first in the data is returned, matching the standard library's\n+        :func:`statistics.mode`.\n+\n+        >>> mode([1, 1, 2, 2, 3])\n+        1\n+        \"\"\"\n+        return Counter(self.data).most_common(1)[0][0]\n+    mode = _StatsProperty('mode', _calc_mode)\n+\n     def _calc_iqr(self):\n         \"\"\"Inter-quartile range (IQR) is the difference between the 75th\n         percentile and 25th percentile. IQR is a robust measure of\n",
+  "test_patch": "diff --git a/tests/test_statsutils.py b/tests/test_statsutils.py\nindex c04a045..1d744b6 100644\n--- a/tests/test_statsutils.py\n+++ b/tests/test_statsutils.py\n@@ -1,4 +1,4 @@\n-from boltons.statsutils import Stats\n+from boltons.statsutils import Stats, mode\n \n \n def test_stats_basic():\n@@ -11,6 +11,16 @@ def test_stats_basic():\n     assert da.median == 9.5\n \n \n+def test_mode():\n+    assert Stats([2, 1, 3, 1]).mode == 1\n+    # ties resolve to the value seen first in the data\n+    assert mode([1, 1, 2, 2, 3]) == 1\n+    # non-numeric, categorical data is supported\n+    assert mode(['a', 'b', 'b', 'c', 'c', 'c']) == 'c'\n+    # empty data falls back to the configured default\n+    assert Stats([], default=None).mode is None\n+\n+\n def _test_pearson():\n     import random\n     from statsutils import pearson_type\n",
+  "test_files": [
+    "tests/test_statsutils.py"
+  ],
+  "fail_to_pass": [
+    "tests/test_statsutils.py::test_mode",
+    "tests/test_statsutils.py::test_stats_basic"
+  ],
+  "pass_to_pass": [],
+  "install_command": null,
+  "test_command": null,
+  "lint_command": null,
+  "lint_baseline": "none",
+  "source_commit": "967864f89791509f9eb36b22b4579d36b72a6df2",
+  "validated": true
+}
